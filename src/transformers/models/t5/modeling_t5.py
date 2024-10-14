@@ -679,8 +679,6 @@ class T5SdpaAttention(T5Attention):
             else:
                 position_bias = self.compute_bias(real_seq_length, key_length, device=query_states.device)
 
-            print(mask.shape, self.has_relative_attention_bias, position_bias, position_bias.sum())
-
             # if key and values are already calculated
             # we want only the last query position bias
             if past_key_value is not None:
@@ -688,8 +686,6 @@ class T5SdpaAttention(T5Attention):
 
             if mask is not None:
                 position_bias = position_bias + mask  # (batch_size, n_heads, seq_length, key_length)
-        else:
-            print('else', self.has_relative_attention_bias, position_bias, position_bias.sum())
 
         if self.pruned_heads:
             mask = torch.ones(position_bias.shape[1])
@@ -700,7 +696,6 @@ class T5SdpaAttention(T5Attention):
 
         attn_dropout = self.dropout if self.training else 0.0
 
-        print('position_bias_masked', position_bias_masked.shape)
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -824,7 +819,6 @@ class T5Block(nn.Module):
         output_attentions=False,
         return_dict=True,
     ):
-        print('T5Block', 'self.is_decoder', self.is_decoder)
         if past_key_value is not None:
             if not self.is_decoder:
                 logger.warning("`past_key_values` is passed to the encoder. Please make sure this is intended.")
@@ -841,8 +835,6 @@ class T5Block(nn.Module):
             cross_attn_past_key_value = past_key_value[2:]
         else:
             self_attn_past_key_value, cross_attn_past_key_value = None, None
-
-        print('T5Block', 'self.is_decoder', self.is_decoder, 'self attention')
 
         self_attention_outputs = self.layer[0](
             hidden_states,
@@ -874,9 +866,6 @@ class T5Block(nn.Module):
             else:
                 query_length = None
 
-            print('T5Block', 'self.is_decoder', self.is_decoder, 'cross attention')
-            print(hidden_states.shape, encoder_hidden_states.shape)
-
             cross_attention_outputs = self.layer[1](
                 hidden_states,
                 key_value_states=encoder_hidden_states,
@@ -889,7 +878,6 @@ class T5Block(nn.Module):
                 output_attentions=output_attentions,
             )
             hidden_states = cross_attention_outputs[0]
-            print(hidden_states.shape)
 
             # clamp inf values to enable fp16 training
             if hidden_states.dtype == torch.float16:
@@ -1149,7 +1137,6 @@ class T5Stack(T5PreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
     ):
-        print('self.is_decoder', self.is_decoder)
         # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
@@ -1199,7 +1186,6 @@ class T5Stack(T5PreTrainedModel):
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
-        print('extended_attention_mask', extended_attention_mask)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -1211,7 +1197,6 @@ class T5Stack(T5PreTrainedModel):
                     encoder_hidden_shape, device=inputs_embeds.device, dtype=torch.long
                 )
             encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
-            print('encoder_extended_attention_mask', encoder_extended_attention_mask)
         else:
             encoder_extended_attention_mask = None
 
