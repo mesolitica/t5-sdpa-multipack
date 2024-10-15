@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
@@ -319,6 +320,19 @@ class T5DenseGatedActDense(nn.Module):
         hidden_states = self.wo(hidden_states)
         return hidden_states
 
+def block_diagonal_concat_4d(*masks, dtype=torch.bfloat16):
+    total_size = sum(mask.size(1) for mask in masks)
+    combined_mask = torch.zeros(masks[0].shape[0], 
+                                total_size, total_size, dtype=dtype)
+
+    current_pos = 0
+
+    for mask in masks:
+        size = mask.size(1)
+        combined_mask[:, current_pos:current_pos + size, current_pos:current_pos + size] = mask
+        current_pos += size
+
+    return combined_mask
 
 class T5LayerFF(nn.Module):
     def __init__(self, config: T5Config):
@@ -584,6 +598,7 @@ class T5SdpaAttention(T5Attention):
         query_length=None,
         use_cache=False,
         output_attentions=False,
+        lengths=None,
     ):
         """
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
@@ -677,7 +692,15 @@ class T5SdpaAttention(T5Attention):
                 if self.gradient_checkpointing and self.training:
                     position_bias.requires_grad = True
             else:
-                position_bias = self.compute_bias(real_seq_length, key_length, device=query_states.device)
+                if lengths is None:
+                    position_bias = self.compute_bias(real_seq_length, key_length, device=query_states.device)
+                else:
+                    biases = []
+                    for l, r in lengths:
+                        bias = self.compute_bias(l, r, device=query_states.device)
+                        biases.append(bias[0])
+
+                    position_bias = block_diagonal_concat_4d(*biases).unsqueeze(0).to(query_states.device)
 
             # if key and values are already calculated
             # we want only the last query position bias
@@ -738,6 +761,7 @@ class T5LayerSelfAttention(nn.Module):
         past_key_value=None,
         use_cache=False,
         output_attentions=False,
+        lengths=None,
     ):
         normed_hidden_states = self.layer_norm(hidden_states)
         attention_output = self.SelfAttention(
@@ -748,6 +772,7 @@ class T5LayerSelfAttention(nn.Module):
             past_key_value=past_key_value,
             use_cache=use_cache,
             output_attentions=output_attentions,
+            lengths=lengths,
         )
         hidden_states = hidden_states + self.dropout(attention_output[0])
         outputs = (hidden_states,) + attention_output[1:]  # add attentions if we output them
@@ -818,6 +843,7 @@ class T5Block(nn.Module):
         use_cache=False,
         output_attentions=False,
         return_dict=True,
+        lengths=None,
     ):
         if past_key_value is not None:
             if not self.is_decoder:
@@ -844,6 +870,7 @@ class T5Block(nn.Module):
             past_key_value=self_attn_past_key_value,
             use_cache=use_cache,
             output_attentions=output_attentions,
+            lengths=lengths,
         )
         hidden_states, present_key_value_state = self_attention_outputs[:2]
         attention_outputs = self_attention_outputs[2:]  # Keep self-attention outputs and relative position weights
@@ -1136,6 +1163,7 @@ class T5Stack(T5PreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        lengths=None,
     ):
         # Model parallel
         if self.model_parallel:
@@ -1256,6 +1284,7 @@ class T5Stack(T5PreTrainedModel):
                     None,  # past_key_value is always None with gradient checkpointing
                     use_cache,
                     output_attentions,
+                    lengths,
                 )
             else:
                 layer_outputs = layer_module(
@@ -1270,6 +1299,7 @@ class T5Stack(T5PreTrainedModel):
                     past_key_value=past_key_value,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
+                    lengths=lengths,
                 )
 
             # layer_outputs is a tuple with:
@@ -1814,6 +1844,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        encoder_lengths = None,
+        decoder_lengths = None,
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1868,6 +1900,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                 position_bias = position_bias,
                 encoder_decoder_position_bias = encoder_decoder_position_bias,
                 return_dict=return_dict,
+                lengths=encoder_lengths,
             )
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
@@ -1912,6 +1945,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             position_bias = decoder_position_bias,
             encoder_decoder_position_bias = encoder_decoder_position_bias,
             return_dict=return_dict,
+            lengths=decoder_lengths,
         )
 
         sequence_output = decoder_outputs[0]
