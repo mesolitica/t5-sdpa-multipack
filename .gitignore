@@ -169,3 +169,6 @@ tags
 .ruff_cache
 
 tokenized
+packing
+mp.py
+Untitled*.ipynb
